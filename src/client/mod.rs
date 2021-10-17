@@ -10,17 +10,19 @@ use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
 };
-use tokio_tungstenite::tungstenite::Error;
-use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
+use tokio_tungstenite::{
+    connect_async,
+    tungstenite::{protocol::Message, Error},
+};
 
-use crate::command::CommandRequest;
 use super::command::{create_command, Command, CommandResponse};
+use crate::command::CommandRequest;
 
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 /// Client for interacting with TV
 pub struct WebosClient {
-    write: Box<dyn Sink<Message, Error=Error> + Unpin>,
+    write: Box<dyn Sink<Message, Error = Error> + Unpin>,
     next_command_id: Arc<Mutex<u8>>,
     ongoing_requests: Arc<Mutex<HashMap<u8, Pinky<CommandResponse>>>>,
     pub key: Option<String>,
@@ -42,10 +44,7 @@ impl WebOsClientConfig {
     /// Creates a new client configuration
     pub fn new(addr: &str, key: Option<String>) -> WebOsClientConfig {
         let address = String::from(addr);
-        WebOsClientConfig {
-            address,
-            key,
-        }
+        WebOsClientConfig { address, key }
     }
 }
 
@@ -53,28 +52,29 @@ impl Clone for WebOsClientConfig {
     fn clone(&self) -> Self {
         let addr = self.address.clone();
         let key = self.key.clone();
-        WebOsClientConfig {
-            address: addr,
-            key,
-        }
+        WebOsClientConfig { address: addr, key }
     }
 }
 
 impl WebosClient {
     /// Creates client connected to device with given address
     pub async fn new(config: WebOsClientConfig) -> Result<WebosClient, String> {
-        let url = url::Url::parse(&config.address).expect("Could not parse given address");
-        let (ws_stream, _) = connect_async(url).await.expect("Failed to connect");
+        let url = url::Url::parse(&config.address).map_err(|_| "Could not parse given address")?;
+        let (ws_stream, _) = connect_async(url).await.map_err(|_| "Failed to connect")?;
         debug!("WebSocket handshake has been successfully completed");
         let (write, read) = ws_stream.split();
         WebosClient::from_stream_and_sink(read, write, config).await
     }
 
     /// Creates client using provided stream and sink
-    pub async fn from_stream_and_sink<T, S>(stream: T, mut sink: S, config: WebOsClientConfig) -> Result<WebosClient, String>
-        where
-            T: Stream<Item=Result<Message, Error>> + 'static + Send,
-            S: Sink<Message, Error=Error> + Unpin + 'static,
+    pub async fn from_stream_and_sink<T, S>(
+        stream: T,
+        mut sink: S,
+        config: WebOsClientConfig,
+    ) -> Result<WebosClient, String>
+    where
+        T: Stream<Item = Result<Message, Error>> + 'static + Send,
+        S: Sink<Message, Error = Error> + Unpin + 'static,
     {
         let next_command_id = Arc::from(Mutex::from(0));
         let ongoing_requests = Arc::from(Mutex::from(HashMap::new()));
@@ -90,7 +90,9 @@ impl WebosClient {
             handshake["payload"]["client-key"] = Value::from(key);
         }
         let formatted_handshake = format!("{}", handshake);
-        sink.send(Message::text(formatted_handshake)).await.unwrap();
+        sink.send(Message::text(formatted_handshake))
+            .await
+            .map_err(|_| "Could not send handshake")?;
         let key = registration_promise.await;
         Ok(WebosClient {
             write: Box::new(sink),
@@ -102,7 +104,10 @@ impl WebosClient {
     /// Sends single command and waits for response
     pub async fn send_command(&mut self, cmd: Command) -> Result<CommandResponse, String> {
         let (message, promise) = self.prepare_command_to_send(&cmd);
-        self.write.send(message).await.unwrap();
+        self.write
+            .send(message)
+            .await
+            .map_err(|_| "Could not send command")?;
         Ok(promise.await)
     }
 
@@ -122,7 +127,10 @@ impl WebosClient {
             .collect();
 
         let mut iter = futures_util::stream::iter(messages);
-        self.write.send_all(&mut iter).await.unwrap();
+        self.write
+            .send_all(&mut iter)
+            .await
+            .map_err(|_| "Could not send commands")?;
         Result::Ok(join_all(promises).await)
     }
 
@@ -153,7 +161,7 @@ async fn process_messages_from_server<T>(
     pending_requests: Arc<Mutex<HashMap<u8, Pinky<CommandResponse>>>>,
     registration_pinky: Pinky<Option<String>>,
 ) where
-    T: Stream<Item=Result<Message, Error>>,
+    T: Stream<Item = Result<Message, Error>>,
 {
     stream
         .for_each(|message| match message {
@@ -162,7 +170,8 @@ async fn process_messages_from_server<T>(
                     if let Ok(json) = serde_json::from_str::<Value>(&text_message) {
                         debug!("JSON Response: {}", json);
                         if json["type"] == "registered" {
-                            let key = json.get("payload")
+                            let key = json
+                                .get("payload")
                                 .and_then(|p| p.get("client-key"))
                                 .and_then(|k| k.as_str())
                                 .map(Into::into);
